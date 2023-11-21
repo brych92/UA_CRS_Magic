@@ -1,0 +1,53 @@
+[general]
+name=UA CRS Magic
+qgisMinimumVersion=3.0
+description=Підбір системи кординат для векторного шару
+version=0.2.1
+author=Стьопа
+email=brych92@gmail.com
+about = Плагін підбирає систему координат при якій центр всіх об'єктів буди найближче до місця кліку.
+		Для того аби скористатися плагіном:
+			  - Виберіть шар
+			  - Натисніть іконку плагіну
+			  - Натисніть на карті на приблизне місце розташування об'єктів(хоча б з точністю до області, але точніше - краще)
+			  Плагін автоматично змінить систему кординат та відцентрує карту до об'єктів шару, в стрічці повідомлень будуть показані інші можливі СК
+		
+		Плагін розроблено в рамках проекту "Відкриті інструменти просторового планування для України".
+		
+		Включені СК:
+		WGS 84
+		'EPSG:3857', 'EPSG:4326',
+		# UCS2000 Gauss-Kruger zones
+		'EPSG:5562', 'EPSG:5563', 'EPSG:5564', 'EPSG:5565', 'EPSG:5566', 'EPSG:5567', 'EPSG:5568', 'EPSG:5569',		
+		'EPSG:5576', 'EPSG:5577', 'EPSG:5578', 'EPSG:5579', 'EPSG:5580', 'EPSG:5581', 'EPSG:5582', 'EPSG:5583',		
+		'EPSG:6381', 'EPSG:6382', 'EPSG:6383', 'EPSG:6384', 'EPSG:6385', 'EPSG:6386', 'EPSG:6387',
+		# UCS2000 Geocentric Meters
+		'EPSG:5558',
+		# UCS2000 Geographic
+		'EPSG:5560', 'EPSG:5561',
+		# UCS2000 Locals
+		'EPSG:9821', 'EPSG:9831', 'EPSG:9832', 'EPSG:9833', 'EPSG:9834',
+		'EPSG:9835', 'EPSG:9836', 'EPSG:9837', 'EPSG:9838', 'EPSG:9839',
+		'EPSG:9840', 'EPSG:9841', 'EPSG:9842', 'EPSG:9843', 'EPSG:9851',
+		'EPSG:9852', 'EPSG:9853', 'EPSG:9854', 'EPSG:9855', 'EPSG:9856',
+		'EPSG:9857', 'EPSG:9858', 'EPSG:9859', 'EPSG:9860', 'EPSG:9861',
+		'EPSG:9862', 'EPSG:9863', 'EPSG:9864', 'EPSG:9865',
+		# Pulkovo Geographic
+		'EPSG:4284', 'EPSG:4179', 'EPSG:4178',
+		# CS63 XZones
+		'EPSG:7825', 'EPSG:7826', 'EPSG:7827', 'EPSG:7828', 'EPSG:7829', 'EPSG:7830', 'EPSG:7831'
+		Якщо ви бажаєте додати якусь СК шукайте нас в JD Help чаті в Telegram: https://t.me/+eq7gtxjTXYBjZmUy
+		
+tracker=https://github.com/brych92/UA_CRS_Magic/issues
+repository=https://github.com/brych92/UA_CRS_Magic
+icon=icon.png
+experimental=true
+homepage=https://github.com/brych92/UA_CRS_Magic
+changelog=
+ Version 0.1.1:
+ * Перша версія
+ Version 0.2.1:
+ * Виправлено список СК
+ * Додана підказка щодо 3ох інших можливих СК
+ 
+
