@@ -1,9 +1,56 @@
 import os
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QApplication
-from qgis.core import Qgis, QgsVectorLayer, QgsProject, QgsMapLayerType, QgsCoordinateTransform, QgsCsException, QgsCoordinateReferenceSystem
-from qgis.PyQt.QtCore import Qt
-from qgis.gui import QgsMapToolEmitPoint
+from qgis.core import Qgis, QgsApplication, QgsVectorLayer, QgsProject, QgsMapLayerType, QgsCoordinateTransform, QgsCsException, QgsCoordinateReferenceSystem,\
+    QgsWkbTypes, QgsGeometry, QgsRectangle, QgsPointXY
+from qgis.PyQt.QtCore import Qt, QTimer
+from qgis.gui import QgsMapToolEmitPoint, QgsRubberBand
+from .find_crs import findCrs
+from PyQt5.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QTextEdit, QPushButton, QLabel, QSizePolicy
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFontMetrics, QCursor, QPixmap
+
+
+class CustomMessageBox(QDialog):
+    def __init__(self, title, message, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle(title)
+
+        # Set the window icon
+        self.plugin_dir = os.path.dirname(__file__)
+        icon = QIcon(os.path.join(self.plugin_dir,"icon.png"))        
+        self.setWindowIcon(icon)
+
+        # Create a QLabel widget with HTML formatting
+        text_edit = QTextEdit()
+        
+        html_text=message.replace("\n", "<br>")
+        
+        text_edit.setHtml(html_text)
+        max_line_width = 0
+        font_metrics=QFontMetrics(text_edit.font())
+        for line in html_text.split('<br>'):
+            line_width = font_metrics.width(line)
+            max_line_width = max(max_line_width, line_width)
+        self.setMinimumWidth(int(max_line_width) + 20)
+        
+        line_height = font_metrics.height()
+        height=min(640,int(html_text.count('<br>')*line_height*1.5))
+        self.setMinimumHeight(height)
+        
+        text_edit.setReadOnly(True)
+        
+        # Create a QPushButton to close the dialog
+        ok_button = QPushButton('OK')
+        ok_button.clicked.connect(self.accept)
+
+        # Set up the layout
+        layout = QVBoxLayout()
+        layout.addWidget(text_edit)
+        layout.addWidget(ok_button)
+
+        self.setLayout(layout)
 
 class CRS_Magic:
     def __init__(self, iface):
@@ -12,16 +59,23 @@ class CRS_Magic:
         self.actions = []
         self.folder_path=os.path.expanduser('~')
         self.activated=False
-        self.message_item=None
-        self.action_reference=None
+        
         self.pointTool = QgsMapToolEmitPoint(self.iface.mapCanvas())
-        self.give_center=False
-        self.centroid=None
+        cursor_pixmap=QPixmap(os.path.join(self.plugin_dir,"cursor.png")).scaledToHeight(32,Qt.SmoothTransformation)
+        cursor=QCursor(cursor_pixmap)
+        self.pointTool.setCursor(cursor)
+        self.pointTool.canvasClicked.connect(self.get_CRS_dict)
+        self.pointTool.deactivated.connect(self.tool_chaged)
+        
+        self.layers=[]
+        self.selected_layers=[]
         
     def initGui(self):
-        icon = QIcon(os.path.join(self.plugin_dir,"Icon.png"))
-        action = QAction(icon, "Підібрати систему кординат для вибраного шару",self.iface.mainWindow())
-        action.triggered.connect(self.Find_CRS)
+        icon = QIcon(os.path.join(self.plugin_dir,"icon.png"))
+        tooltip=f"・*.ﾟ☆ <b>UA CRS Magic</b> ☆ﾟ.*・\nПідібрати СК для вибраних шарів"
+        
+        action = QAction(icon, tooltip, self.iface.mainWindow())
+        action.triggered.connect(self.Run)
         action.setEnabled(True)
         action.setCheckable(True)
         self.iface.addToolBarIcon(action)
@@ -32,189 +86,215 @@ class CRS_Magic:
         for action in self.actions:
             self.iface.removeToolBarIcon(action)
     
+    def clearMBar(self):        
+        mbar=self.iface.messageBar()
+        for message in mbar.items():
+            if message.text().startswith("[CRS Magic]"):
+                message.dismiss()
+    
+    
+    def get_CRS_dict(self,click_point):
+        def status_changed(status):
+            if status==3:
+                fk_b_s=r'<span style="color:black">'
+                fk_r_s='<span style="color:red">'
+                fk_e=r'</span>'
+                self.clearMBar()
+                #print("Завершено!")
+                #print('Звіт:')
+                #print(task.message)
+                result_message=f'[CRS Magic] Перевірте коректність підбору СК по фотоплану.\r\n\r\n'
+                number=1
+                
+                for layer in self.selected_layers:
+                    result_message=result_message+f'\r\n{number}. '
+                    number=number+1
+                    if layer.name() in task.total_result and task.total_result[layer.name()]['Checked']:
+                        if 'PossibleCRS' in task.total_result[layer.name()]:
+                            crs=task.total_result[layer.name()]['PossibleCRS']
+                            other_crs=task.total_result[layer.name()]['OtherPossibleCRS']
+                            result_message=result_message+f"{fk_b_s}Шар '{layer.name()}':\r\n СК змінено на {crs}.  {other_crs}{fk_e}\r\n"                                
+                        else:
+                            result_message=result_message+f"{fk_r_s}Шар '{layer.name()}': помилка підбору СК - {task.total_result[layer.name()]['Error']}{fk_e}\r\n"
+                            
+                    elif layer.type() != QgsMapLayerType.VectorLayer:
+                        result_message=result_message+f"{fk_r_s}Шар '{layer.name()}': не було перевірено, так як він не векторний{fk_e}\r\n"
+                        
+                    elif layer.featureCount() == 0:
+                        result_message=result_message+f"{fk_r_s}Шар '{layer.name()}': не було перевірено, так як в ньому відсутні об'єкти{fk_e}\r\n"
+                                
+                
+                canvas.refreshAllLayers()
+                self.clearMBar()
+                custom_message_box = CustomMessageBox('Готово!', result_message)
+                custom_message_box.exec_()
+                # if len(self.selected_layers)>0:
+                    # custom_message_box = CustomMessageBox('Готово!', result_message)
+                    # custom_message_box.exec_()
+                # else:
+                    # message_bar.pushMessage(result_message, Qgis.MessageLevel.Success,0)
+                    # print(result_message)
+                self.activated=False
+                self.action_reference.setChecked(False)
+                self.iface.mapCanvas().unsetMapTool(self.iface.mapCanvas().mapTool())
+                # print(task.message)
+                return
+            if status==4:
+                self.clearMBar()
+                # print(task.message)
+                # print(task.last_action)
+                if task.isCanceled():
+                    print("Відмінено користувачем!")
+                else:
+                    if task.getFailure():                            
+                        failure=task.getFailure()
+                    else:
+                        failure="Помилка, спробуйте ще раз!"
+                    message_bar.pushMessage(f"[CRS Magic] {failure}", Qgis.MessageLevel.Warning, 5)                        
+                
+        self.clearMBar()
+        message_bar = self.iface.messageBar()
+        #print(f'Точка кліку до входження в задачу: {click_point.toString(4)}')
+        project = QgsProject.instance()
+        canvas = self.iface.mapCanvas()
+        canvas_crs = canvas.mapSettings().destinationCrs()        
+        work_crs = QgsCoordinateReferenceSystem('EPSG:3857')
+        
+        transformation = QgsCoordinateTransform(canvas_crs, work_crs, project)
+        transformation.disableFallbackOperationHandler(True)
+        tr_click_point=transformation.transform(click_point)
+        
+        message_bar.pushMessage('[CRS Magic] Зачекайте будь ласка, йде підбір СК...', Qgis.MessageLevel.Success,0)
+        
+        task = findCrs("Пошук можливих систем координат", self.layers, tr_click_point, work_crs, project)        
+        
+        task.statusChanged.connect(status_changed)
+        task.setDependentLayers(self.layers)
+        QgsApplication.taskManager().addTask(task)
+        
+        print('Запускаю процес підбору...')
+    
+    
+    def Run(self):
+        # simple_search=False
+        
+        # if self.isControlOrShift()=='shift':#якщо зажато шифт - виконуємо підбір по центру екстенту
+            # simple_search=True            
+        
+        message_bar = self.iface.messageBar()
+        self.clearMBar()
+        
+        if self.activated:#Якщо увімкнено то вимикаємо і відключаємо інструмент
+            self.activated=False
+            self.action_reference.setChecked(False)
+            self.iface.mapCanvas().unsetMapTool(self.pointTool)            
+            return
+        
+        layers=[]
+        
+        selected_layers = self.iface.layerTreeView().selectedLayersRecursive()
+        
+        if len(selected_layers)<1:
+            message_bar.pushMessage("[CRS Magic] Спочатку виділіть векторні шари в панелі шарів!", Qgis.MessageLevel.Warning, 5)
+            self.action_reference.setChecked(False)
+            return
+        
+        for layer in selected_layers:
+            if layer.type() == QgsMapLayerType.VectorLayer and layer.featureCount() != 0:
+                layers.append(layer)
+        
+        if len(layers)<1:
+            message_bar.pushMessage("[CRS Magic] Жоден з вибраних шарів не векторний або в не містить об'єктів для аналізу. Будь ласка спочатку виберіть векторні шари", Qgis.MessageLevel.Warning, 5)
+            self.action_reference.setChecked(False)
+            return
+        
+        # if self.isControlOrShift()=='ctrl':
+            # self.visualizeExtent(layers)
+            # self.action_reference.setChecked(False)
+            # return
+        
+        layers_warning=''
+        if not all(element in layers for element in selected_layers):
+            layers_warning=".Зверніть увагу: деякі з вибраних шарів не векторні або в них відсутні об'єкти!" 
+        
+        self.activated=True
+        self.action_reference.setChecked(True)
+        
+        if len(layers)==1:
+            message_bar.pushMessage(f"[CRS Magic] Клікніть на карті приблизне можливе місцезнаходження об'єктів шару '{layers[0].name()}'{layers_warning}", Qgis.MessageLevel.Info, 0)
+        else:
+            message_bar.pushMessage(f"[CRS Magic] Клікніть на карті приблизне можливе місцезнаходження об'єктів вибраних шарів({len(selected_layers)}шт.) {layers_warning}", Qgis.MessageLevel.Info, 0)
+        
+        self.layers=layers
+        self.selected_layers=selected_layers
+        
+        self.iface.mapCanvas().setMapTool(self.pointTool)
+        
+
+    def tool_chaged(self):
+        self.activated=False
+        self.action_reference.setChecked(False)
+        self.clearMBar()
+    
     def isControlOrShift(self):
         ctrl_pressed = Qt.ControlModifier & QApplication.keyboardModifiers()
         shift_pressed = Qt.ShiftModifier & QApplication.keyboardModifiers()
             
-        if ctrl_pressed or shift_pressed:
-            return True
+        if ctrl_pressed and shift_pressed:
+            print('ctrl+shift')
+            return 'ctrl+shift'
+        elif ctrl_pressed:
+            print('ctrl')
+            return 'ctrl'
+        elif shift_pressed:
+            print('shift')
+            return 'shift'
         else:
             return False
     
-    def Find_CRS(self):
-        message_bar = self.iface.messageBar()
-        #Якщо інструмент увімкнено - вимикаємо
-        if self.activated:
-            self.activated=False
-            self.action_reference.setChecked(False)
-            self.iface.mapCanvas().unsetMapTool(self.iface.mapCanvas().mapTool())
-            
-            try:
-                self.message_item.dismiss()
-            except RuntimeError as e:
-                pass
-            return
-        layer = self.iface.activeLayer()
-        
-        #перевірка на те що шар векторний
-        if layer is None or layer.type() != QgsMapLayerType.VectorLayer:
-            self.message_item = message_bar.pushMessage("Спочатку виберіть векторний шар", Qgis.MessageLevel.Warning, 5)
-            self.action_reference.setChecked(False)
-            return
-        
-        #перевірка на наявність об'єктів в шарі
-        if layer.featureCount() == 0:
-            message_item = message_bar.pushMessage("Неможливо підібрати СК. Вибраний шар не містить об'єктів.", Qgis.MessageLevel.Warning, 5)
-            self.action_reference.setChecked(False)
-            return
-        
-        #позначаємо як увімкнений
-        self.activated=True
-        self.action_reference.setChecked(True)
-        
-        project = QgsProject.instance()
+    def visualizeExtent(self, layers):
         canvas = self.iface.mapCanvas()
-        map_crs = canvas.mapSettings().destinationCrs()
-        
-        #Список СК для перебору
-        crs_list = [
-            # WGS 84
-            'EPSG:3857', 'EPSG:4326',
-            # UCS2000 Gauss-Kruger zones
-            'EPSG:5562', 'EPSG:5563', 'EPSG:5564', 'EPSG:5565', 'EPSG:5566', 'EPSG:5567', 'EPSG:5568', 'EPSG:5569',
-            # Застарілі
-            # 'EPSG:5570', 'EPSG:5571', 'EPSG:5572', 'EPSG:5573', 'EPSG:5574', 'EPSG:5575',
-            'EPSG:5576', 'EPSG:5577', 'EPSG:5578', 'EPSG:5579', 'EPSG:5580', 'EPSG:5581', 'EPSG:5582', 'EPSG:5583',
-            # Додала Юлія
-            'EPSG:6381', 'EPSG:6382', 'EPSG:6383', 'EPSG:6384', 'EPSG:6385', 'EPSG:6386', 'EPSG:6387',
-            # UCS Geocentric Meters
-            'EPSG:5558',
-            # UCS2000 Geographic
-            'EPSG:5560', 'EPSG:5561',
-            # UCS2000 Locals
-            'EPSG:9821', 'EPSG:9831', 'EPSG:9832', 'EPSG:9833', 'EPSG:9834',
-            'EPSG:9835', 'EPSG:9836', 'EPSG:9837', 'EPSG:9838', 'EPSG:9839',
-            'EPSG:9840', 'EPSG:9841', 'EPSG:9842', 'EPSG:9843', 'EPSG:9851',
-            'EPSG:9852', 'EPSG:9853', 'EPSG:9854', 'EPSG:9855', 'EPSG:9856',
-            'EPSG:9857', 'EPSG:9858', 'EPSG:9859', 'EPSG:9860', 'EPSG:9861',
-            'EPSG:9862', 'EPSG:9863', 'EPSG:9864', 'EPSG:9865',
-            # Pulkovo Geographic
-            'EPSG:4284', 'EPSG:4179', 'EPSG:4178',
-            # CS63 XZones
-            'EPSG:7825', 'EPSG:7826', 'EPSG:7827', 'EPSG:7828', 'EPSG:7829', 'EPSG:7830', 'EPSG:7831'
-        ]        
-        self.give_center=False
-        if self.isControlOrShift():
-            self.give_center=True
-            message_bar.pushMessage(f"Клацніть на карті на об'єктах шару '{layer.name()}', що являються правильною геометрією", Qgis.MessageLevel.Info, 10)
-            self.message_item=message_bar.currentItem()
-        else:
-            message_bar.pushMessage(f"Клацніть на карті приблизне можливе місцезнаходження об'єктів шару '{layer.name()}'", Qgis.MessageLevel.Info, 10)
-            self.message_item=message_bar.currentItem()
-        
-        self.centroid=None
-        def find_crs(click_point):
-            if self.give_center:
-                print('with shift activated')
-                canvas_crs = canvas.mapSettings().destinationCrs()
-                layer_crs = layer.crs()
-                transform = QgsCoordinateTransform(canvas_crs, layer_crs, QgsProject.instance())
+        canvas_crs = canvas.mapSettings().destinationCrs()
 
-                # Transform the canvas point to layer coordinates
-                self.centroid = transform.transform(click_point)
-                try:
-                    self.message_item.dismiss()
-                except RuntimeError as e:
-                    pass
-                message_bar.pushMessage(f"Клацніть на карті приблизне можливе місцезнаходження об'єктів шару '{layer.name()}'", Qgis.MessageLevel.Info, 10)
-                self.message_item=message_bar.currentItem()
-                self.give_center=False
-                return
-            elif not self.centroid:
-                print('not centroid')
-                self.centroid = layer.extent().center()
-            centroid=self.centroid
-            print(self.centroid)
-            distance_results={}
-            def zoomToLayerExtent(layer, canvas):                  
-                layer_extent = layer.extent()
-                layer_crs = layer.crs()
-                canvas_crs = canvas.mapSettings().destinationCrs()
-                if layer.crs()!=canvas.mapSettings().destinationCrs(): 
-                    transform = QgsCoordinateTransform(layer_crs, canvas_crs, QgsProject.instance())
-                    canvas_extent = transform.transformBoundingBox(layer_extent)
-                else:
-                    canvas_extent = layer_extent
-                canvas.setExtent(canvas_extent)
-                self.iface.mapCanvas().zoomScale(self.iface.mapCanvas().scale()*3)
-                canvas.refresh()
-            
-            # Беремо центроїд шару
-            centroid = layer.extent().center()
-            # Приймаємо за базову точку точку кліку
-            reference_point=click_point
-            # створюємо пусті змінні в які буе записуватися СК з найменшою відстанню від точки кліку
-            closest_crs = None
-            min_distance = float("inf")
-            
-            for crs_code in crs_list:                
-                #Створюємо СК на основі коду з списку
-                crs = QgsCoordinateReferenceSystem(crs_code)
-                
-                xform = QgsCoordinateTransform(crs, map_crs, project)
-                #Перетворюємо центроїд шару в СК карти приймаючи вихідну проекцію зі списку
-                try:
-                    transformed_centroid = xform.transform(centroid)
-                    #Вираховуємо відстань від перетвореного центроїду до референсної точки                
-                    distance = reference_point.distance(transformed_centroid)
-                    #print(f'Відстань: {distance} {crs_code}({crs})')
-                    #Якщо Відстань менша за попередньозбережену записуємо СК як найвірогіднішу на даній ітерації циклу
-                    distance_results[crs_code]=distance
-                    if distance < min_distance:                        
-                        min_distance = distance
-                        closest_crs = crs
-                except QgsCsException as e:                    
-                    #print(f"Не вдалося застосувати трансформацію {crs_code}: {e}")
-                    continue
-            
-            # Застосовуємо підібрану СК до шару
-            if closest_crs:
-                layer.setCrs(closest_crs)
-                zoomToLayerExtent(layer, canvas)
-                
-                #відображення інших можливих перетворень
-                sorted_crs = sorted(distance_results.items(), key=lambda x: x[1])
-                lowest_keys = [key for key, value in sorted_crs[1:4]]
-                result_string = f'Інші можливі СК: {", ".join(lowest_keys)}'
-                
-                message_item = message_bar.pushMessage(f"СК змінено на {closest_crs.authid()}. Перевірте коректність підбору СК по фотоплану. {result_string}.", Qgis.MessageLevel.Info, 10)
-                
-                self.activated=False
-                self.action_reference.setChecked(False)
-                self.iface.mapCanvas().unsetMapTool(self.iface.mapCanvas().mapTool())                
-                try:
-                    self.message_item.dismiss()
-                except RuntimeError as e:
-                    pass
-                #print(f"CRS changed to {closest_crs.authid()}")
-            else:
-                message_item = message_bar.pushMessage("Не вдалося знайти СК для даного шару", Qgis.MessageLevel.Warning, 5)
-                self.activated=False
-                self.action_reference.setChecked(False)
-                self.iface.mapCanvas().unsetMapTool(self.iface.mapCanvas().mapTool())
-                
-                try:
-                    self.message_item.dismiss()
-                except RuntimeError as e:
-                    pass
-                
-                #self.action_reference.setChecked(False)
-                #print("No CRS found from the list.")
-                
-        
-        self.pointTool = QgsMapToolEmitPoint(self.iface.mapCanvas())
-        self.pointTool.canvasClicked.connect(find_crs)
-        canvas.setMapTool(self.pointTool)
+        # Create a rubber band for the total extent
+        total_rubber_band = QgsRubberBand(canvas, QgsWkbTypes.LineGeometry)
+        total_extent = QgsRectangle()
 
+        for current_layer in layers:
+            layer_extent = current_layer.extent()
+
+            # Transform layer extent to canvas CRS
+            transform = QgsCoordinateTransform(current_layer.crs(), canvas_crs, QgsProject.instance())
+            layer_extent = transform.transformBoundingBox(layer_extent)
+            # Combine the layer geometry with the total extent
+            total_extent.combineExtentWith(layer_extent)
+
+        # Set the geometry of the total rubber band
+        total_rubber_band.setToGeometry(QgsGeometry.fromRect(total_extent).convertToType(QgsWkbTypes.LineGeometry), None)
+
+        # Set the color and width of the total rubber band
+        total_rubber_band.setColor(Qt.red)
+        total_rubber_band.setWidth(1)        
+        # Reset the total rubber band after a timeout
+        def aaa():
+            canvas = self.iface.mapCanvas()
+
+            # Get all rubber bands on the canvas
+            rubber_bands = [item for item in canvas.scene().items() if isinstance(item, QgsRubberBand)]
+
+            # Remove each rubber band
+            for band in rubber_bands:
+                band.reset()
+
+            # Refresh the canvas
+            canvas.refresh()
+        timer = QTimer()
+        timer.timeout.connect(aaa)
+        timer.start(10)  # Adjust the timeout as needed
+
+        # Set the extent and zoom the canvas
+        canvas.setExtent(total_extent)
+        canvas.zoomScale(canvas.scale() * 1.5)
+        canvas.refresh()
     
    
